@@ -9,6 +9,7 @@ import { intrinsicPrototypeMemberMayHaveChanged } from "./javascriptSemanticIntr
 
 import {
   semanticStaticPropertyKey,
+  staticJavaScriptTruthiness,
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
 import {
@@ -79,16 +80,21 @@ export interface SemanticReturnedReferenceResult {
   readonly references: readonly SemanticReturnedReference[];
   /** Source-local callable targets resolved by the same binding/projection owner. */
   readonly callables: ReadonlySet<t.Function>;
+  /** Source calls whose result can be selected as the callable. */
+  readonly calleeCallResults?: ReadonlySet<t.CallExpression>;
   /** A visible invocation-method mutation prevents a source-local result proof. */
   readonly unresolvedInvocation?: boolean;
   /** Both states close the supported source-local may-target graph. Widened joins projections without dropping represented targets; it does not claim runtime completeness. */
   readonly precision: "exact" | "widened";
 }
 
+type SelectedSource = Pick<Candidate, "path" | "readAt" | "capturedSelections">;
+
 interface SemanticReturnedReferenceReader {
   (
     callee: t.Node,
     invocation?: t.CallExpression | t.OptionalCallExpression,
+    selected?: SelectedSource,
   ): SemanticReturnedReferenceResult;
   /** Whether the callee-only read depends on live ambient effects. */
   readonly observesAmbientEffects: (callee: t.Node) => boolean;
@@ -119,8 +125,9 @@ export const createSemanticReturnedReferences = (
   const resolve = (
     callee: t.Node,
     invocation?: t.CallExpression | t.OptionalCallExpression,
+    selected?: SelectedSource,
   ): SemanticReturnedReferenceResult => {
-    const existing = results.get(callee);
+    const existing = selected === undefined ? results.get(callee) : undefined;
     if (
       existing !== undefined &&
       existing.invocation === invocation &&
@@ -156,6 +163,7 @@ export const createSemanticReturnedReferences = (
     const result: {
       references: readonly SemanticReturnedReference[];
       callables: ReadonlySet<t.Function>;
+      calleeCallResults?: Set<t.CallExpression>;
       precision: SemanticReturnedReferenceResult["precision"];
       unresolvedInvocation?: boolean;
     } = { references: [], callables: functions, precision: "exact" };
@@ -206,9 +214,10 @@ export const createSemanticReturnedReferences = (
               invocationContext.receiver?.start,
               invocationContext.receiver?.end,
               invocationContext.receiverUnknown,
+              // Parser recovery retains null argument slots; keep their index.
               invocationContext.arguments?.map((argument) => [
-                argument.start,
-                argument.end,
+                argument?.start,
+                argument?.end,
               ]),
             ];
       let readKey = JSON.stringify([
@@ -306,7 +315,13 @@ export const createSemanticReturnedReferences = (
           : { invocation: invocationContext }),
       });
     };
-    enqueue(callee, [], undefined, undefined, sourceInvocation);
+    enqueue(
+      callee,
+      selected?.path ?? [],
+      selected?.readAt,
+      selected?.capturedSelections,
+      sourceInvocation,
+    );
     while (work.length > 0) {
       const current = work.pop();
       if (current === undefined) break;
@@ -491,19 +506,25 @@ export const createSemanticReturnedReferences = (
         t.isConditionalExpression(node) ||
         t.isLogicalExpression(node)
       ) {
-        pending.push(
-          {
+        const condition = t.isConditionalExpression(node)
+          ? staticJavaScriptTruthiness(node.test)
+          : undefined;
+        if (condition !== false)
+          pending.push({
             ...current,
             node: t.isConditionalExpression(node) ? node.consequent : node.left,
-          },
-          {
+          });
+        if (condition !== true)
+          pending.push({
             ...current,
             node: t.isConditionalExpression(node) ? node.alternate : node.right,
-          },
-        );
+          });
       } else if (t.isSequenceExpression(node)) {
         const last = node.expressions.at(-1);
         if (last !== undefined) pending.push({ ...current, node: last });
+      } else if (t.isCallExpression(node)) {
+        if (current.path === undefined || current.path.length === 0)
+          (result.calleeCallResults ??= new Set()).add(node);
       } else if (t.isFunction(node)) {
         if (current.path === undefined || current.path.length === 0)
           functions.add(node);
@@ -778,19 +799,20 @@ export const createSemanticReturnedReferences = (
       );
     });
     result.references = output;
-    results.set(callee, {
-      result,
-      invocation,
-      iterationUnknown: state.arrayIterationUnknown,
-      ambientGeneration: readsAmbientEffects
-        ? semanticAmbientEffectGeneration(state, "contents")
-        : undefined,
-      opaqueSites: semanticGlobalCodeSites(state).length,
-      dependencies: [...dependencies].map(([binding, generation]) => ({
-        binding,
-        generation,
-      })),
-    });
+    if (selected === undefined)
+      results.set(callee, {
+        result,
+        invocation,
+        iterationUnknown: state.arrayIterationUnknown,
+        ambientGeneration: readsAmbientEffects
+          ? semanticAmbientEffectGeneration(state, "contents")
+          : undefined,
+        opaqueSites: semanticGlobalCodeSites(state).length,
+        dependencies: [...dependencies].map(([binding, generation]) => ({
+          binding,
+          generation,
+        })),
+      });
     if (result.precision === "widened")
       state.returnedReferenceWidenings.add(callee);
     return result;

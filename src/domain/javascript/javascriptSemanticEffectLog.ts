@@ -11,6 +11,7 @@ import {
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
 import {
+  SemanticPropertyPathEffectIndex,
   semanticArrayIndex,
   semanticPropertyPathKeyMatches,
   type JavaScriptSemanticPropertyPath,
@@ -33,8 +34,10 @@ import {
   semanticEscapeFollowsCapture,
   semanticDefiniteEffectPrecedesReference,
   semanticEffectTiming,
+  semanticTopLevelEffectIsOrderable,
   semanticBindingEffectFollowsRead,
   semanticReadPrecedesEffectWithinActivation,
+  semanticEffectTimingWithinActivation,
   semanticTopLevelEffectFollowsCapture,
 } from "./javascriptSemanticMutationInitializers.js";
 import {
@@ -159,7 +162,7 @@ export const semanticOpaqueGlobalMayHaveChanged = (
  * through aliases even where the original name is shadowed or out of block scope.
  * Without a disjointness proof, consider their enclosing activation and closures.
  * Queries retain no binding-by-eval table. */
-function* semanticOpaqueBindingEffects(
+export function* semanticOpaqueBindingEffects(
   binding: JavaScriptSemanticBindingState,
   state: JavaScriptSemanticAnalysisState,
   kind: "binding" | "reference" = "binding",
@@ -797,6 +800,11 @@ export const bindingEffectsConfinedToReceiverCalls = (
       path.length === 0 && node !== undefined && matchesCall(node),
   );
 
+/** Whether the binding's object escaped at any recorded site. */
+export const bindingHasRecordedEscapes = (
+  binding: JavaScriptSemanticBindingState,
+): boolean => binding.escapedPaths.length > 0;
+
 /**
  * Whether an escape of `binding`'s object is recorded at a site other than
  * `except`, the call a reader is already evaluating.
@@ -820,12 +828,21 @@ export function* semanticMemberWriteNodes(
   }
 }
 
+/** Stored source groups paired with their destination paths. */
+export function* semanticAssignedMemberSlots(
+  binding: JavaScriptSemanticBindingState,
+) {
+  for (const effect of binding.memberWrites)
+    if (effect.assignedSources?.length)
+      yield { path: effect.path, sources: effect.assignedSources };
+}
+
 /** The sources recorded member writes assigned into `binding`'s object. */
 export function* semanticMemberWriteSources(
   binding: JavaScriptSemanticBindingState,
 ): Generator<NonNullable<AmbientEffect["assignedSources"]>[number]> {
-  for (const effect of binding.memberWrites)
-    yield* effect.assignedSources ?? [];
+  for (const { sources } of semanticAssignedMemberSlots(binding))
+    yield* sources;
 }
 
 const sameLiteralPrefix = (
@@ -862,6 +879,7 @@ export const semanticBindingMemberWritesObservedAt = (
   path: SemanticAliasSelectionPath,
   read: {
     readonly at: (depth: number) => t.Node;
+    readonly observedAt?: (read: t.Node, effect: t.Node | undefined) => t.Node;
     readonly capturedAt: ((depth: number) => t.Node | undefined) | undefined;
     readonly captured: readonly {
       readonly node: t.Node;
@@ -882,6 +900,24 @@ export const semanticBindingMemberWritesObservedAt = (
   readonly escapeMayPrecede: () => boolean;
 } => {
   const { at, capturedAt, captured } = read;
+  const clock = (site: t.Node, effect: t.Node | undefined) =>
+    read.observedAt?.(site, effect) ?? site;
+  const timing = (site: t.Node, effect: t.Node | undefined) => {
+    const position = clock(site, effect);
+    if (
+      read.observedAt &&
+      effect &&
+      semanticReadPrecedesEffectWithinActivation(
+        position,
+        effect,
+        state.parentsByNode,
+      )
+    )
+      return "after";
+    return read.observedAt
+      ? semanticEffectTimingWithinActivation(position, effect, state)
+      : semanticEffectTiming(position, effect, state);
+  };
   // Only a definite assignment can replace an already captured receiver.
   // Select candidates once per query rather than rescanning every propagated
   // may-write for each matching effect.
@@ -939,8 +975,7 @@ export const semanticBindingMemberWritesObservedAt = (
               JSON.stringify(receiver.projection),
         ),
       )) &&
-    semanticEffectTiming(at(effect.path.length), effect.node, state) !==
-      "after" &&
+    timing(at(effect.path.length), effect.node) !== "after" &&
     !targetsReplacedPrefix(effect);
   const writes = semanticEffectPathCandidates(
     binding.memberWrites,
@@ -954,13 +989,13 @@ export const semanticBindingMemberWritesObservedAt = (
       sameLiteralPrefix(effect.path, path) &&
       semanticDefiniteEffectPrecedesReference(
         effect.node,
-        at(effect.path.length),
+        clock(at(effect.path.length), effect.node),
         state.parentsByNode,
       ) &&
       (replacement === undefined ||
         semanticDefiniteEffectPrecedesReference(
           replacement.node!,
-          effect.node,
+          clock(effect.node, replacement.node),
           state.parentsByNode,
         ) ||
         (replacement.node === effect.node &&
@@ -973,7 +1008,7 @@ export const semanticBindingMemberWritesObservedAt = (
     replacement !== undefined &&
     effect.node !== undefined &&
     effect !== replacement &&
-    (semanticEffectTiming(replacement.node!, effect.node, state) === "before" ||
+    (timing(replacement.node!, effect.node) === "before" ||
       (effect.node === replacement.node &&
         (effect.assignedSources?.[0]?.target?.start ?? -1) <
           (replacement.assignedSources?.[0]?.target?.start ?? -1)));
@@ -1446,4 +1481,89 @@ const semanticPathsOverlap = (
     if (!leftMatchesRight && !rightMatchesLeft) return false;
   }
   return true;
+};
+
+export const createSemanticOpaqueReferenceEffectQuery = (
+  state: JavaScriptSemanticAnalysisState,
+) => {
+  const byActivation = new Map<string, t.CallExpression | null | undefined>();
+  return (
+    binding: JavaScriptSemanticBindingState,
+    read: t.Node,
+  ): boolean | undefined => {
+    if (state.opaqueEffects.byScope.size === 0) return undefined;
+    const scope = activation(binding.scopeId, state);
+    if (!byActivation.has(scope)) {
+      let first: t.CallExpression | null | undefined;
+      for (const effect of semanticOpaqueBindingEffects(
+        binding,
+        state,
+        "reference",
+      )) {
+        if (!semanticTopLevelEffectIsOrderable(effect, state.parentsByNode)) {
+          first = null;
+          break;
+        } else if (first == null) first = effect;
+        else if (
+          semanticTopLevelEffectFollowsCapture(
+            first,
+            effect,
+            state.parentsByNode,
+          )
+        )
+          continue;
+        else if (
+          semanticTopLevelEffectFollowsCapture(
+            effect,
+            first,
+            state.parentsByNode,
+          )
+        )
+          first = effect;
+        else {
+          first = null;
+          break;
+        }
+      }
+      byActivation.set(scope, first);
+    }
+    const first = byActivation.get(scope);
+    if (first === undefined) return undefined;
+    if (first !== null)
+      return semanticEffectTiming(read, first, state) !== "after";
+    for (const effect of semanticOpaqueBindingEffects(
+      binding,
+      state,
+      "reference",
+    ))
+      if (semanticEffectTiming(read, effect, state) !== "after") return true;
+    return false;
+  };
+};
+
+/** Index overlapping member writes and escapes for settled binding facts. */
+export const createSemanticMemberEffectLookup = () => {
+  const indices = new WeakMap<
+    readonly MemberWrite[],
+    { size: number; index: SemanticPropertyPathEffectIndex<MemberWrite> }
+  >();
+  return (
+    binding: JavaScriptSemanticBindingState,
+    kind: "member-write" | "escape",
+    path: JavaScriptSemanticPropertyPath,
+    descendants = true,
+  ): Iterable<MemberWrite> => {
+    const effects =
+      kind === "member-write" ? binding.memberWrites : binding.escapedPaths;
+    let cached = indices.get(effects);
+    if (cached === undefined) {
+      cached = { size: 0, index: new SemanticPropertyPathEffectIndex() };
+      indices.set(effects, cached);
+    }
+    while (cached.size < effects.length) {
+      const effect = effects[cached.size++]!;
+      cached.index.retain(effect.path, effect);
+    }
+    return cached.index.matching(path, descendants);
+  };
 };
