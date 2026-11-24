@@ -227,13 +227,13 @@ it("forwards an established native inflate failure before cancellation", async (
   });
   try {
     await expect(buffer(member.output)).rejects.toMatchObject({
-      reason: "format",
+      reason: "malformed",
       cause: { code: "Z_DATA_ERROR" },
     });
     expect(compressionFailure).toBeDefined();
     expect(member.output.errored?.cause).toBe(compressionFailure);
     await expect(member.completion).rejects.toMatchObject({
-      reason: "format",
+      reason: "malformed",
       cause: compressionFailure,
     });
   } finally {
@@ -531,7 +531,11 @@ it.each(["ENOENT", "ENOTDIR"] as const)(
           });
           expect(
             projectAnalysisError(
-              translateArtifactFailure("extract_artifact", cause),
+              translateArtifactFailure(
+                "extract_artifact",
+                "/selected/artifact",
+                cause,
+              ),
             ),
           ).toMatchObject({
             category: "integrity_mismatch",
@@ -779,7 +783,7 @@ it("reports a truncated compressed member when reading its stream", async () => 
   await withPyInstallerReader(bytes, async (reader) => {
     const entry = (await members(reader))[0]!;
     await expect(buffer(await reader.open(entry))).rejects.toMatchObject({
-      reason: "format",
+      reason: "malformed",
     });
   });
 });

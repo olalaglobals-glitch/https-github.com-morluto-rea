@@ -6,7 +6,7 @@ import { GoBinaryService } from "../../../src/application/go/GoBinaryService.js"
 import { GoBinaryProvider } from "../../../src/go/GoBinaryProvider.js";
 import { GO_ANALYSIS_BUDGET_DEFAULTS } from "../../../src/domain/go/goBinary.js";
 import {
-  AnalysisMalformedTargetError,
+  AnalysisTargetFailureError,
   AnalysisResourceConstraintError,
 } from "../../../src/domain/analysisErrorCore.js";
 import { BinaryFormatFailure } from "../../../src/domain/binaryContainer.js";
@@ -32,7 +32,7 @@ it("rejects advertised PE32 data directories outside the optional header", async
   expect(projectAnalysisError(result.error)).toMatchObject({
     code: "unsupported_target",
     category: "unsupported_target",
-    details: { path, format_failure: "malformed" },
+    details: { path, failure_kind: "malformed" },
   });
 });
 
@@ -71,8 +71,8 @@ it.each([false, true])(
           },
         });
       else {
-        expect(result.error).toBeInstanceOf(AnalysisMalformedTargetError);
-        if (!(result.error instanceof AnalysisMalformedTargetError))
+        expect(result.error).toBeInstanceOf(AnalysisTargetFailureError);
+        if (!(result.error instanceof AnalysisTargetFailureError))
           throw result.error;
         expect(result.error.cause).toBeInstanceOf(BinaryFormatFailure);
         if (!(result.error.cause instanceof BinaryFormatFailure))
@@ -86,7 +86,7 @@ it.each([false, true])(
         expect(projected).toMatchObject({
           code: "unsupported_target",
           details: {
-            format_failure: "truncated",
+            failure_kind: "truncated",
             format: "macho",
             field: "Mach-O load commands",
             offset: 32,

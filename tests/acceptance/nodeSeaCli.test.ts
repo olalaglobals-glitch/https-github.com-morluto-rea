@@ -299,24 +299,6 @@ cliTest(
   },
 );
 
-cliTest("rejects a malformed SEA blob through the CLI", async ({ cli }) => {
-  const root = await createTestTempDirectory("rea-sea-invalid-cli-");
-  const source = join(root, "application");
-  await writeFile(source, nodeSeaElf({ blob: Buffer.alloc(16) }));
-  const result = await cli.run({
-    arguments: ["inspect-artifact", source, "--json"],
-  });
-  expect(result.exitCode).toBe(1);
-  expect(result.json).toMatchObject({
-    code: "artifact_operation_failed",
-    details: {
-      operation: "inspect_artifact",
-      reason: "format",
-      detail: expect.stringMatching(/magic/iu),
-    },
-  });
-});
-
 cliTest(
   "refuses an empty-body SEA asset table over its record bound",
   async ({ cli }) => {
@@ -338,7 +320,7 @@ cliTest(
     });
     expect(result.exitCode).not.toBe(0);
     expect(result.json).toMatchObject({
-      code: "truncated",
+      code: "partial",
       retryable: true,
       details: {
         reason: "limit",

@@ -21,7 +21,7 @@ const expectBlobAdmissionFailure = (
   reply: Parameters<typeof parseMcpToolError>[0],
 ) => {
   expect(parseMcpToolError(reply).error).toMatchObject({
-    code: "truncated",
+    code: "partial",
     retryable: true,
     details: {
       reader_limit: {
@@ -72,7 +72,7 @@ it.each(["compact"] as const)(
         artifact_limits: { node_sea: { asset_count: 1 } },
       });
       expect(parseMcpToolError(assetRefusal).error).toMatchObject({
-        code: "truncated",
+        code: "partial",
         retryable: true,
         details: {
           operation: "inspect_artifact",
@@ -166,11 +166,13 @@ it.each(["compact"] as const)(
       expect((await call("open_binary", { path })).isError).not.toBe(true);
       const invalid = await call("inspect_artifact", {});
       expect(parseMcpToolError(invalid).error).toMatchObject({
-        code: "artifact_operation_failed",
+        code: "unsupported_target",
         details: {
           operation: "inspect_artifact",
-          reason: "format",
-          detail: expect.stringContaining("magic"),
+          path,
+          failure_kind: "malformed",
+          format: "node-sea",
+          reason: expect.stringContaining("magic"),
         },
       });
       expect((await call("close_binary", {})).isError).not.toBe(true);
@@ -210,7 +212,7 @@ it("reports the PE parser budget when Node SEA inventory exhausts it", async () 
   expect(opened.isError, JSON.stringify(opened)).not.toBe(true);
   const reply = await call("inspect_artifact", {});
   expect(parseMcpToolError(reply).error).toMatchObject({
-    code: "truncated",
+    code: "partial",
     retryable: false,
     details: {
       operation: "inspect_artifact",

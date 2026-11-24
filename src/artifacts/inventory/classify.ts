@@ -7,6 +7,7 @@ import {
 import {
   artifactOperationCause,
   ArtifactReaderFailure,
+  artifactParseFailure,
   openRootArtifact,
   releaseRootArtifact,
   abortIfNeeded,
@@ -127,7 +128,7 @@ export const classifyAndHashRootForInventory = async (
       "integrity",
       `Artifact root changed after target admission: expected an admitted file at ${path}, observed a directory`,
       {
-        integrityCheck: "container-identity",
+        integrityCheck: "admitted-identity",
         userMessage:
           "The opened file was replaced by a directory. Select the intended artifact and reopen it before retrying.",
       },
@@ -366,9 +367,7 @@ const classifyRootFormat = async (
   if (nesContainerFormat(evidence.prefix) !== undefined) {
     const parsed = parseInesLayout(evidence.prefix, archiveBytes);
     if (!parsed.ok)
-      throw new ArtifactReaderFailure("format", parsed.error.detail, {
-        cause: new ParseFailureError(parsed.error),
-      });
+      throw artifactParseFailure(new ParseFailureError(parsed.error), signal);
     return "ines";
   }
   const classificationPath = artifactNameForClassification(
@@ -593,7 +592,7 @@ export const assertAdmittedRootDigest = (
       "integrity",
       `Artifact root changed after target admission at ${path}: expected ${expected}, observed ${observed}`,
       {
-        integrityCheck: "container-identity",
+        integrityCheck: "admitted-identity",
         userMessage:
           "The artifact changed after it was opened. Reopen the selected artifact, then retry.",
       },

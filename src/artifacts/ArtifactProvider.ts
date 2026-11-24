@@ -47,7 +47,8 @@ import {
 } from "../domain/binaryTargetTypes.js";
 import {
   AnalysisCapabilityUnavailableError,
-  AnalysisUnsupportedTargetError,
+  unsupportedTarget,
+  AnalysisTargetFailureError,
 } from "../domain/analysisErrorCore.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { interfaceBuilderLimitsSchema } from "../domain/apple/interfaceBuilderGraph.js";
@@ -224,7 +225,11 @@ class BundleResourceArtifactClient implements AnalysisClient {
       );
     } catch (cause: unknown) {
       return err(
-        translateArtifactFailure(operation as ArtifactAnalysisOperation, cause),
+        translateArtifactFailure(
+          operation as ArtifactAnalysisOperation,
+          this.root.canonicalPath,
+          cause,
+        ),
       );
     }
   }
@@ -410,7 +415,11 @@ class ArtifactClient implements AnalysisClient {
       );
     } catch (cause: unknown) {
       return err(
-        translateArtifactFailure(operation as ArtifactAnalysisOperation, cause),
+        translateArtifactFailure(
+          operation as ArtifactAnalysisOperation,
+          artifactTargetSelectedPath(this.target),
+          cause,
+        ),
       );
     }
   }
@@ -423,10 +432,11 @@ class ArtifactClient implements AnalysisClient {
   private unsupportedTarget(
     operation: string,
     reason: string,
-  ): AnalysisUnsupportedTargetError {
-    return new AnalysisUnsupportedTargetError(
+  ): AnalysisTargetFailureError {
+    return unsupportedTarget(
       operation,
       this.target.sourcePath ?? this.target.path,
+      this.target.format,
       reason,
     );
   }
